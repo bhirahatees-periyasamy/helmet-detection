@@ -1,0 +1,36 @@
+# Virtualenv
+.venv/
+venv/
+
+# Input video - large (the default clip is ~956 MB) and not ours to
+# redistribute. Drop any .mp4/.avi/.mov/.mkv into video/ and the app
+# auto-discovers it (see detection/config.py::discover_video_path).
+video/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Model weights - ~320 MB total, and two of them (yolo26x 113 MB, yolo11x
+# 109 MB) individually exceed GitHub's 100 MB hard file limit, which would
+# make the repo unpushable. Every weight file is reproducibly obtainable:
+# the yolo* ones auto-download from Ultralytics, and the helmet model has a
+# documented curl in the README. See "Getting the model weights" there.
+models/
+*.pt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Streamlit / run artifacts
+streamlit.log
+*.log
+.streamlit/secrets.toml
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
