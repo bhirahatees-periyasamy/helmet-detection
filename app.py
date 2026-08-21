@@ -8,13 +8,15 @@ Pipeline per frame (never batches the whole video):
 import collections
 import logging
 import os
+import shutil
+import tempfile
 import time
 
 import cv2
 import streamlit as st
 
 from detection.annotate import annotate_frame
-from detection.config import PipelineConfig, discover_video_path
+from detection.config import VIDEO_EXTENSIONS, PipelineConfig, discover_video_path
 from detection.models import ModelLoadError, load_yolo_model, validate_helmet_model, validate_person_model
 from detection.pipeline import PipelineResources, process_frame
 
@@ -29,6 +31,45 @@ SPEED_OPTIONS = {"0.5x": 0.5, "1x": 1.0, "2x": 2.0, "4x": 4.0}
 def format_time(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def persist_upload(uploaded) -> str:
+    """Spool an uploaded video to a temp file and return its path.
+
+    cv2.VideoCapture needs a real path on disk, and Streamlit re-runs this
+    script on every interaction, so the upload is written exactly once per
+    distinct file (keyed by name+size) and reused afterwards. Copied in
+    chunks rather than read into memory whole, since these clips run to
+    hundreds of MB.
+    """
+    key = (uploaded.name, uploaded.size)
+    existing = st.session_state.get("upload_path")
+    if st.session_state.get("upload_key") == key and existing and os.path.isfile(existing):
+        return existing
+
+    if existing and os.path.isfile(existing):
+        try:
+            os.remove(existing)  # a new upload supersedes the previous temp file
+        except OSError:
+            pass
+
+    suffix = os.path.splitext(uploaded.name)[1].lower() or ".mp4"
+    fd, path = tempfile.mkstemp(prefix="helmet_upload_", suffix=suffix)
+    try:
+        uploaded.seek(0)
+        with os.fdopen(fd, "wb") as dest:
+            shutil.copyfileobj(uploaded, dest, length=4 * 1024 * 1024)
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+
+    st.session_state.upload_key = key
+    st.session_state.upload_path = path
+    logger.info("Stored uploaded video %s (%.1f MB) at %s", uploaded.name, uploaded.size / 1048576, path)
+    return path
 
 
 @st.cache_data(show_spinner=False)
@@ -152,9 +193,23 @@ st.title("Real-Time Helmet Detection")
 _defaults = PipelineConfig()
 
 with st.sidebar:
-    st.header("Configuration")
+    st.header("Video source")
     default_video = discover_video_path()
-    video_path = st.text_input("Video path", value=default_video or "", disabled=st.session_state.running)
+    uploaded_video = st.file_uploader(
+        "Upload a video",
+        type=[ext.lstrip(".") for ext in VIDEO_EXTENSIONS],
+        disabled=st.session_state.running,
+        help="Takes precedence over the path below. Needed on a fresh clone, "
+             "since video/ is gitignored.",
+    )
+    video_path = st.text_input(
+        "…or path to a video file",
+        value=default_video or "",
+        disabled=st.session_state.running,
+        placeholder="e.g. video/input_video.mp4",
+    )
+
+    st.header("Configuration")
     person_model_path = st.text_input(
         "Person model path", value=_defaults.person_model_path, disabled=st.session_state.running
     )
@@ -175,25 +230,70 @@ with st.sidebar:
     )
     speed_multiplier = SPEED_OPTIONS[speed_label]
 
+# An upload wins over the typed path; the typed path (which defaults to
+# whatever was auto-discovered in video/) is the fallback.
+resolved_video = None
+if uploaded_video is not None:
+    try:
+        resolved_video = persist_upload(uploaded_video)
+    except OSError as exc:
+        st.error(f"Could not save the uploaded video: {exc}")
+        st.stop()
+elif video_path:
+    resolved_video = video_path
+
 config = PipelineConfig(
     person_model_path=person_model_path,
     helmet_model_path=helmet_model_path,
-    video_path=video_path or None,
+    video_path=resolved_video,
     person_confidence=person_confidence,
     helmet_confidence=helmet_confidence,
     iou_threshold=iou_threshold,
 )
 
-if not config.video_path or not os.path.isfile(config.video_path):
+# Switching video mid-session invalidates the open capture and all tracking
+# state - track IDs and counts from a different clip are meaningless here.
+if st.session_state.get("active_video") != config.video_path:
+    st.session_state.active_video = config.video_path
+    if st.session_state.cap is not None:
+        st.session_state.cap.release()
+        st.session_state.cap = None
+    st.session_state.running = False
+    st.session_state.resources = None
+    st.session_state.unique_ids = set()
+    st.session_state.frame_index = 0
+    st.session_state.video_ended = False
+    st.session_state.last_frame_rgb = None
+    st.session_state.frame_times.clear()
+    st.session_state.fps_estimate = 0.0
+    st.session_state.current_counts = {"people": 0, "helmet": 0, "no_helmet": 0}
+    st.session_state.current_compliance = None
+
+if not config.video_path:
+    st.info(
+        "**No video loaded yet.** Upload one with **Upload a video** in the "
+        "sidebar, or drop a `.mp4` / `.avi` / `.mov` / `.mkv` file into the "
+        "project's `video/` folder and reload — it will be picked up "
+        "automatically.\n\n"
+        "`video/` is gitignored, so a freshly cloned copy of this project "
+        "starts out with no video."
+    )
+    st.stop()
+
+if not os.path.isfile(config.video_path):
     st.error(
-        "No valid video file found. Place a .mp4/.avi/.mov/.mkv file in the "
-        "`video/` directory or set an explicit path in the sidebar."
+        f"No file at `{config.video_path}`. Fix the path in the sidebar, or "
+        "upload a video instead."
     )
     st.stop()
 
 video_info = probe_video(config.video_path)
 if video_info is None:
-    st.error(f"Video file exists but could not be opened/decoded: {config.video_path}")
+    st.error(
+        f"`{os.path.basename(config.video_path)}` could not be opened or decoded. "
+        "It may be corrupt, or use a codec this OpenCV build doesn't support - "
+        "try re-encoding it to H.264 MP4."
+    )
     st.stop()
 
 try:

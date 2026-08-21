@@ -1,0 +1,8 @@
+[server]
+# Streamlit's default upload cap is 200 MB, which rejects most real CCTV /
+# dashcam clips (the sample video for this project is ~956 MB). Raised so the
+# sidebar uploader is actually usable for full-length footage.
+maxUploadSize = 4096
+
+[browser]
+gatherUsageStats = false

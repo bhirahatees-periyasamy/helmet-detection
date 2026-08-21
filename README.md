@@ -273,9 +273,13 @@ curl -L -o models/yolo26x.pt \
   https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x.pt
 ```
 
-Then drop any `.mp4`/`.avi`/`.mov`/`.mkv` into `video/` — the app
-auto-discovers whatever is there. If a weight file is missing the app fails
-fast with an explicit "Model weights not found" error rather than a traceback.
+You don't need to fetch a video at all: the app has a **sidebar uploader**, so
+a fresh clone with an empty `video/` is still usable — it opens on a "No video
+loaded yet" prompt rather than an error. Dropping a `.mp4`/`.avi`/`.mov`/`.mkv`
+into `video/` also works, since the app auto-discovers whatever is there.
+
+If a weight file is missing the app fails fast with an explicit "Model weights
+not found" error rather than a traceback.
 
 Optional alternates referenced in this README (`yolo11x.pt`, `yolo26m.pt` for
 the person/speed trade, `hardhat_yolov8m.pt` for construction-PPE footage) can
@@ -289,10 +293,26 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The video auto-discovered from `video/` (any `.mp4`/`.avi`/`.mov`/`.mkv`) is
-used by default; override the path, model paths, and thresholds from the
-sidebar. Click **Start**/**Stop**/**Reset** to control playback — Reset
-rewinds the video and clears tracking IDs, counts, and the unique-people set.
+### Choosing a video
+
+Three ways, in precedence order:
+
+1. **Upload one** — sidebar → *Upload a video* (`.mp4`/`.avi`/`.mov`/`.mkv`).
+   The upload is spooled to a temp file once (OpenCV needs a real path, and
+   Streamlit re-runs the script on every interaction) and reused from then on.
+   `.streamlit/config.toml` raises the upload cap to 4 GB, since Streamlit's
+   200 MB default rejects most full-length CCTV/dashcam clips.
+2. **Type a path** — sidebar → *…or path to a video file*.
+3. **Drop a file in `video/`** — auto-discovered and pre-filled into the path
+   box (see `detection/config.py::discover_video_path`).
+
+Switching video mid-session releases the old capture and clears tracker state,
+counts, and the unique-people set — track IDs from a different clip don't carry
+any meaning across the change.
+
+Click **Start**/**Stop**/**Reset** to control playback — Reset rewinds the
+video and clears tracking IDs, counts, and the unique-people set. Model paths
+and thresholds are also sidebar-editable.
 
 ### Playback controls
 
